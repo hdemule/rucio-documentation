@@ -199,7 +199,9 @@ Both grant every account while RBAC is disabled.
 If the `has_permission` function of the policy package returns `None` for the actions it does not know,
 Rucio falls back to the generic module and nothing needs to be done.
 If it resolves them to its own default instead, e.g. a `perm_default` granting only root and admins,
-these operations are refused to every other account. Map them explicitly:
+these operations are refused to every other account, **even with RBAC disabled**:
+listing DIDs or their content, getting metadata, listing replicas, and so downloading, getting a rule, etc.
+Before upgrading Rucio, map them explicitly:
 
 ```python
 from rucio.core.permission.generic import perm_delete_metadata, perm_read_data
@@ -217,14 +219,25 @@ perm = {
 ### Overriding the DID actions
 
 With RBAC enabled, the following generic actions apply the DID permissions of roles, and require reading the DIDs they involve:
-`add_did`, `add_replicas`, `add_rule`, `attach_dids`, `attach_dids_to_dids`, `create_did_sample`, `detach_dids`,
-`get_request_by_did`, `set_metadata` and `set_metadata_bulk`.
+`add_did`, `add_replicas`, `add_rule`, `attach_dids`, `attach_dids_to_dids`, `create_did_sample`,
+`declare_suspicious_file_replicas`, `detach_dids`, `get_request_by_did`, `set_metadata` and `set_metadata_bulk`.
+`declare_suspicious_file_replicas` receives the declared replicas as `pfns`: PFNs, or dictionaries with a `scope`, a `name` and an `rse_id`.
 
 A policy package overriding one of them replaces the generic function: roles then grant nothing on that action,
 and reading the DIDs it involves is not required. Since RBAC hides the DIDs an account may not read,
 such an override would let the account act on them anyway, e.g. add a rule on a hidden DID, or on a collection
 whose content it may not all read, and so copy it to an RSE.
 Before enabling RBAC, make these overrides call the generic function, or mirror it.
+
+### Role management actions
+
+Managing roles is checked with the actions `list_roles`, `add_role`, `update_role`, `delete_role`,
+`add_role_permission`, `delete_role_permission`, `list_role_accounts`, `add_account_role`, `delete_account_role`,
+`set_account_role_activates_at`, `set_account_role_expires_at` and `clean_expired_account_roles`.
+The generic module grants them to root and admins only, through `perm_default`.
+
+It also grants `list_account_roles` to an account listing its own roles,
+and `list_role_permissions` to an account listing the permissions of a role it holds.
 
 ### Listing filters
 

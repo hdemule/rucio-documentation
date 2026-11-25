@@ -32,7 +32,7 @@ or, if the option is not set in `rucio.cfg`, in the configuration table, which t
 rucio config set --section rbac --key enabled --value True
 ```
 
-Before enabling RBAC on an existing instance, follow [Upgrading to RBAC](#upgrading-to-rbac).
+Before enabling RBAC on an existing instance, follow [Upgrading](#upgrading).
 
 ## Concepts
 
@@ -58,7 +58,8 @@ The attribute keeps working, so enabling RBAC demotes no admin.
 A role is assigned to an account with an optional activation date (`activates_at`, now by default)
 and an optional expiry date (`expires_at`, none by default).
 An assignment grants the role only while it is active: from its activation date until its expiry date.
-An expired assignment grants nothing, but stays in the database until it is removed.
+An expired assignment grants nothing, but stays in the database until it is removed,
+e.g. by [cleaning the expired assignments](#rest-api).
 
 ### DID permissions
 
@@ -119,6 +120,24 @@ Roles only add to what the generic policy already allows, except for the operati
 
 ## What enabling RBAC changes
 
+### Reading DIDs
+
+With RBAC enabled, an account reads only the scopes it owns and what its roles grant: owning a DID does not let an account read it.
+Root and admins read everything. Everything else is:
+
+- filtered out of listings, e.g. of DIDs, content, parent DIDs, files, replicas, rules, locks, transfer requests and scopes.
+  A scope is listed if the account reads some of its DIDs;
+- refused with an access denied error (HTTP 403) when asked for directly, e.g. the metadata of a DID, its replicas,
+  and so its download, or a rule on it.
+
+A DID which does not exist is refused in the same way, unless the account could read a DID of that name,
+so that the existence of a DID is not revealed.
+
+:::note
+The `/redirect` endpoint is not authenticated, so it cannot tell what the requester may read.
+With RBAC enabled, it refuses every request.
+:::
+
 ### Operations requiring to read DIDs
 
 With RBAC enabled, the following operations require the account to read the DIDs they involve.
@@ -129,7 +148,9 @@ Before, any account could perform them on any DID:
   every container, dataset and file the DID contains when the rule is created;
 - adding a replica of an existing file on a user RSE;
 - attaching DIDs to a collection, even to one in a scope the account owns;
-- getting the transfer requests of a DID.
+- getting the transfer requests of a DID;
+- declaring a replica suspicious, as the declaration tells whether the replica exists.
+  A PFN which does not resolve to a DID is refused in the same way.
 
 Root and admins are not affected, nor is an account owning the scope of the DID, or owning the DID with write on it.
 Before enabling RBAC, grant accounts read, through roles, on the DIDs they need for these operations.
@@ -160,11 +181,58 @@ Read on a collection does not show its content, but does not keep its content fr
   e.g. path-scoped tokens or ACLs, on the RSEs holding it.
 :::
 
-## Upgrading to RBAC
+## Managing roles
 
-1. If the instance uses a policy package, update it as described in
-   [Policy packages and RBAC](operator/policy_packages/policy_package_development.md#policy-packages-and-rbac):
-   define the new actions, and update the overrides of the DID actions which now apply roles.
+Only root and admins can manage roles, their permissions and their assignments.
+Any account can list its own roles and the permissions of the roles it holds.
+
+Roles can be managed while RBAC is disabled, e.g. to prepare them before enabling it.
+Every response of the role endpoints then carries an `X-Rucio-Warning` header, as roles grant nothing until RBAC is enabled.
+
+### REST API
+
+Roles are managed through the `roles` endpoint, enabled by default.
+See the [REST API documentation](https://rucio.cern.ch/documentation/html/rest_api_doc.html#tag/Role) for the details of each route.
+
+| Route                                     | Description                                                                                  |
+|-------------------------------------------|----------------------------------------------------------------------------------------------|
+| `GET /roles/status`                       | Tell whether RBAC is enabled.                                                                |
+| `GET /roles/`                             | List the roles.                                                                              |
+| `POST /roles/<role>`                      | Add a role, with its `description`, `assignable` and `locked`.                               |
+| `PUT /roles/<role>`                       | Change the given `description`, `assignable` and `locked` of a role, with `force` if locked. |
+| `DELETE /roles/<role>`                    | Delete a role, with `force` if it is locked or assigned.                                     |
+| `GET /roles/<role>/permissions`           | List the permissions of a role.                                                              |
+| `POST /roles/<role>/permissions/did`      | Grant `operations` on a `did_pattern`, replacing what the role had on it.                    |
+| `DELETE /roles/<role>/permissions/did`    | Remove the permission of a role on a `did_pattern`.                                          |
+| `GET /roles/<role>/accounts`              | List the accounts holding a role.                                                            |
+| `POST /roles/<role>/accounts/<account>`   | Assign a role, with its optional `activates_at` and `expires_at`, and `force` if needed.     |
+| `PUT /roles/<role>/accounts/<account>`    | Change the given dates of an assignment.                                                     |
+| `DELETE /roles/<role>/accounts/<account>` | Remove a role from an account, with `force` if the role is not assignable.                   |
+| `GET /roles/accounts/<account>`           | List the roles of an account, `@me` for the caller. With `detail`, also their permissions.   |
+| `DELETE /roles/accounts/expired`          | Remove the expired assignments of every account. With `dry_run`, only report them.           |
+
+A DID permission is given as its pattern and the list of its operations, possibly empty for `---`:
+
+```json
+{"did_pattern": "data:raw*", "operations": ["read", "write"]}
+```
+
+## Upgrading
+
+### Before upgrading Rucio
+
+:::warning
+Rucio checks the new read actions of the permission policy whether RBAC is enabled or not.
+With a policy package refusing the actions it does not know, reading DIDs, their metadata, content, replicas, rules or locks
+is refused to every account but root and admins, even with RBAC disabled.
+Before upgrading, define these actions in the policy package, see
+[New actions](operator/policy_packages/policy_package_development.md#new-actions).
+:::
+
+### Before enabling RBAC
+
+1. If the instance uses a policy package, update its overrides of the DID actions which now apply roles, see
+   [Overriding the DID actions](operator/policy_packages/policy_package_development.md#overriding-the-did-actions).
 1. Create the roles, grant them their DID permissions, and assign them to the accounts which need them,
    in particular read on the DIDs needed for the [operations requiring to read DIDs](#operations-requiring-to-read-dids).
 1. Enable RBAC, see [Enabling RBAC](#enabling-rbac).
