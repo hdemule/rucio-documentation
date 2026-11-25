@@ -41,10 +41,12 @@ Before enabling RBAC on an existing instance, follow [Upgrading](#upgrading).
 A role has a name, an optional description and two flags:
 
 - `assignable`: whether the role can be assigned to and removed from accounts.
-  A role which is not assignable can only be assigned or removed with `force`.
+  A role which is not assignable can only be assigned or removed with `force`,
+  and the [synchronisation with an identity provider](#with-an-identity-provider) never assigns nor removes it.
 - `locked`: whether the role is protected from changes. Changing the description,
   the `assignable` flag or the permissions of a locked role, or deleting it, requires `force`.
-  Unlocking it does not.
+  New roles are locked by default. Unlocking a role needs no `force`.
+  The [synchronisation with the policy package](#with-the-policy-package) never alters nor deletes a locked role.
 
 A role still assigned to accounts can only be deleted with `force`, which also removes it from these accounts and drops its permissions.
 
@@ -132,6 +134,9 @@ Root and admins read everything. Everything else is:
 
 A DID which does not exist is refused in the same way, unless the account could read a DID of that name,
 so that the existence of a DID is not revealed.
+
+A policy package can disable the filtering of some listings, for some roles or for every account, see
+[Disabling listing filters](operator/policy_packages/policy_package_development.md#disabling-listing-filters).
 
 :::note
 The `/redirect` endpoint is not authenticated, so it cannot tell what the requester may read.
@@ -296,6 +301,7 @@ See the [REST API documentation](https://rucio.cern.ch/documentation/html/rest_a
 | `PUT /roles/<role>/accounts/<account>`    | Change the given dates of an assignment.                                                     |
 | `DELETE /roles/<role>/accounts/<account>` | Remove a role from an account, with `force` if the role is not assignable.                   |
 | `GET /roles/accounts/<account>`           | List the roles of an account, `@me` for the caller. With `detail`, also their permissions.   |
+| `PUT /roles/accounts/<account>`           | Synchronise the roles of an account with an identity provider, see below.                    |
 | `DELETE /roles/accounts/expired`          | Remove the expired assignments of every account. With `dry_run`, only report them.           |
 
 A DID permission is given as its pattern and the list of its operations, possibly empty for `---`:
@@ -303,6 +309,53 @@ A DID permission is given as its pattern and the list of its operations, possibl
 ```json
 {"did_pattern": "data:raw*", "operations": ["read", "write"]}
 ```
+
+## Synchronising roles
+
+### With the policy package
+
+A policy package can define the roles of the instance, with their description, see
+[Role module](operator/policy_packages/policy_package_development.md#role-module).
+Synchronising the roles with the policy package, with `rucio.core.role.sync_roles_from_policy_package`:
+
+- creates the roles the policy package defines which do not exist yet, assignable and unlocked;
+- updates the description of the existing unlocked roles it defines;
+- deletes the unlocked roles it does not define, including those created through the CLI or the REST API.
+
+Locked and reserved roles are never touched. Permissions and assignments are managed in Rucio:
+the synchronisation only removes those of the roles it deletes.
+The synchronisation is applied in a single transaction: either all of it is applied, or none of it.
+`rucio.core.role.sync_roles_from_policy_package_dry_run` reports what it would do, without applying it.
+
+:::warning
+A role which is unlocked and not defined by the policy package is deleted, with its permissions and assignments.
+Lock the roles managed in Rucio, which is the default for new roles.
+:::
+
+### With an identity provider
+
+The roles of an account can be synchronised with the roles an identity provider (IdP) supplies for it,
+through `PUT /roles/accounts/<account>` or `RoleClient.sync_account_roles`. Only root and admins can do it.
+Rucio does not fetch the roles from the IdP: the caller supplies them.
+
+```json
+{"roles": {"analysts": null, "production": "2027-01-01T00:00:00"}, "dry_run": false}
+```
+
+`roles` maps each role to the expiry date of its assignment, `null` for none.
+It may also be a list of role names and of `{"role": ..., "expires_at": ...}` objects.
+Dates are in UTC, in ISO 8601 or in the Rucio date format, e.g. `Fri, 01 Jan 2027 00:00:00 UTC`.
+The synchronisation:
+
+1. removes the expired assignments of the account;
+1. removes the roles the account holds and the IdP does not supply, including those assigned in Rucio;
+1. assigns the supplied roles the account does not hold, active from now on;
+1. updates the expiry date of the supplied roles the account holds.
+
+Roles which are not assignable are left untouched. Supplied roles unknown to Rucio are ignored,
+as are supplied expiry dates which have already passed, or are not after the activation date of the assignment.
+The synchronisation is applied in a single transaction, and returns a report of what was done.
+With `dry_run`, it only reports what it would do.
 
 ## Upgrading
 

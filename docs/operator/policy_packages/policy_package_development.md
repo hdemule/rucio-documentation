@@ -15,6 +15,7 @@ The basic elements of a policy package are the following:
 - A `permission.py` module implementing permission
   customisations (optional).
 - A `schema.py` module implementing schema customization (optional).
+- A `role.py` module defining the roles of the instance (optional), see [Role module](#role-module).
 - One or more files for experiment-specific algorithms (optional).
 
 The recommended Python package layouts can be found [here](https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/). An example `src`-layout based policy package is as such:
@@ -30,6 +31,7 @@ experiment-rucio-policy-package
 │       │   __init__.py               # required
 │       │   permission.py             # optional
 │       │   schema.py                 # optional
+│       │   role.py                   # optional
 │       │   pfn2lfn.py                # optional (deterministic scope translation algorithm)
 │       │   non_deterministic_pfn.py  # optional (non-deterministic scope translation algorithm)
 │       │   ...
@@ -254,3 +256,88 @@ Each function it does not define falls back to the generic one:
   returns a callable taking a scope and a name, telling whether the account may perform `operation` on the DID.
 
 The callables are built once per listing, so that a long listing does not query the database for each item.
+
+### Role module
+
+A policy package can define the roles of the instance in a `role.py` module.
+It defines the roles, their description and the listing filters they disable, not their permissions nor their assignments,
+which are managed in Rucio. Rucio creates and updates the roles it defines when
+[synchronising the roles with the policy package](operator/role_based_access_control.md#with-the-policy-package).
+
+```python
+roles = {
+    'analysts': {
+        'description': 'Reads the data scopes.',
+    },
+    'production': {
+        'description': 'Runs the production workflows.',
+        'disable_filters': ['list_scopes', 'list_dids'],
+    },
+}
+
+# Optional
+disable_filters_for_all_roles = ['list_scopes']
+disable_filters_for_all_accounts = []
+```
+
+`roles` may also be a list of definitions, each with its `name`, e.g. `[{'name': 'analysts', 'description': '...'}]`.
+
+The roles are always defined by the main policy package of the instance,
+set by the `RUCIO_POLICY_PACKAGE` environment variable or the `package` option of the `policy` section,
+never by the policy package of a VO.
+Without a role module, the instance has no roles defined by its policy package and disables no filter.
+A malformed role module raises `ErrorLoadingPolicyPackage`.
+
+#### Disabling listing filters
+
+With RBAC enabled, listings are filtered by default.
+A disabled filter lets its listing through unfiltered, for:
+
+- the accounts holding a role, with the `disable_filters` of the role;
+- the accounts holding at least one role, other than a reserved one, with `disable_filters_for_all_roles`;
+- every account, even one holding no role, with `disable_filters_for_all_accounts`.
+
+Only active role assignments count.
+
+A filter only changes what a request returns once it is accepted. Whether a request is accepted is decided by the permission module:
+reading a DID directly, or acting on it, still requires the permission of its action, whatever filter is disabled.
+
+Each filter is named after the listing it applies to, and hides from it what the account may not read.
+Disabling a filter shows these items again in that listing.
+
+Scopes:
+
+- `list_scopes`: the scopes in which the account reads no DID.
+- `list_scopes_with_account`: the same, when the scopes are listed with the accounts owning them.
+- `get_scopes`: the same, when the scopes of a given account are listed.
+
+DIDs:
+
+- `list_dids`: the DIDs of a scope, when searching them, possibly by metadata.
+- `scope_list`: the DIDs of a scope, when listing the whole scope.
+- `list_new_dids`: the recently created DIDs.
+- `list_content`: the DIDs attached to a collection.
+- `list_content_history`: the DIDs ever attached to a collection, including those detached since.
+- `list_files`: the files of a collection, resolved recursively.
+- `bulk_list_files`: the same, for several collections at once.
+- `list_parent_dids`: the datasets and containers a DID is attached to.
+- `list_archive_content`: the files stored inside an archive.
+- `get_dataset_by_guid`: the datasets containing the file with a given GUID.
+
+Replicas:
+
+- `list_replicas`: the replicas, with their PFNs, of the files the account may not read.
+- `list_datasets_per_rse`: the datasets with replicas on an RSE.
+- `get_did_from_pfns`: the DIDs a list of PFNs resolves to.
+- `list_bad_replicas_status`: the bad replicas, and their PFNs.
+- `get_bad_replicas_summary`: the bad replica counts of the scopes the account does not wholly read, which are left out of the sums.
+- `get_suspicious_files`: the suspicious replicas.
+
+Rules and locks:
+
+- `list_replication_rules`: the rules on DIDs the account may not read.
+- `list_associated_replication_rules_for_file`: the rules protecting a file, set on the file or on its parent collections.
+- `examine_replication_rule`: the transfers of a rule, each naming a file of the content of the DID.
+- `get_dataset_locks_bulk`: the dataset locks of several datasets or containers.
+- `get_dataset_locks_by_rse`: the dataset locks on an RSE.
+- `get_replica_locks_for_rule_id`: the replica locks of a rule, each naming a file.
