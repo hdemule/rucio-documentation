@@ -189,6 +189,93 @@ Any account can list its own roles and the permissions of the roles it holds.
 Roles can be managed while RBAC is disabled, e.g. to prepare them before enabling it.
 Every response of the role endpoints then carries an `X-Rucio-Warning` header, as roles grant nothing until RBAC is enabled.
 
+### Command line
+
+Roles are managed with the `rucio role` commands.
+The same operations are available in Python through the [`RoleClient`](pathname:///html/client_api/roleclient.html).
+
+#### Roles
+
+```bash
+# List the roles, with --detail also their permissions
+rucio role list --detail
+
+# Add a role
+rucio role add analysts --description "Reads the data scopes." --locked false
+
+# Change its description, and lock it
+rucio role update analysts --description "Reads the data scopes, writes the raw data." --locked true
+
+# Delete it. --force also deletes a locked role, or one still assigned to accounts
+rucio role remove analysts --force
+```
+
+A role added with `rucio role add` is assignable and **locked**, unless `--assignable false` or `--locked false` is given.
+Unlocking a role and deleting one with `--force` ask for confirmation.
+
+#### DID permissions
+
+```bash
+# Read on the scopes starting with data, read and write on the raw DIDs of data, nothing on its secret DIDs
+rucio role permission did add analysts 'data*' r
+rucio role permission did add analysts 'data:raw*' rw
+rucio role permission did add analysts 'data:secret*' none
+
+# List the permissions of the role
+rucio role permission list analysts
+
+# Remove a permission: its DIDs fall back to the next less specific pattern of the role
+rucio role permission did remove analysts 'data:secret*'
+```
+
+The operations are given as letters, `r`, `w` and `d`, in any combination, or as `none` for `---`.
+Adding a permission on a pattern replaces what the role had on it.
+Quote the patterns containing `*`, so that the shell does not expand them.
+
+Before adding or removing a permission whose scope part is a wildcard, e.g. `data*`,
+the command shows the scopes it currently matches and asks for confirmation.
+`rucio role permission list --detail` expands such patterns into the scopes they match.
+The command also warns when a pattern withdraws operations granted by a less specific pattern of the role.
+
+```bash
+$ rucio role permission list analysts
+Permissions associated with role 'analysts':
++------+--------------+--------------+
+| TYPE | IDENTIFIER   | OPERATION(S) |
+|------+--------------+--------------|
+| did  | data*:*      | r--          |
+| did  | data:raw*    | rw-          |
+| did  | data:secret* | ---          |
++------+--------------+--------------+
+```
+
+Changing the permissions of a locked role requires `--force`.
+
+#### Role assignments
+
+```bash
+# Assign the role, permanently to jdoe, and for December only to guest
+rucio role account add analysts jdoe
+rucio role account add analysts guest --activates-at 2026-12-01 --expires-at 2027-01-01
+
+# Change the expiry date of an assignment, NEVER for none
+rucio role account update analysts guest --expires-at NEVER
+
+# List the accounts holding the role, and the roles of an account with their permissions
+rucio role account list -r analysts
+rucio role account list -a jdoe --detail
+
+# Remove the role from an account
+rucio role account remove analysts guest
+```
+
+Dates are given in UTC, as `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD HH:MM:SS`.
+Assigning or removing a role which is not assignable, such as the `admin` role, requires `--force`:
+
+```bash
+rucio role account add admin jdoe --force
+```
+
 ### REST API
 
 Roles are managed through the `roles` endpoint, enabled by default.

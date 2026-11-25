@@ -103,6 +103,27 @@ deleted_at : None
 email      : root@abc.com
 ```
 
+On an instance with [role-based access control](operator/role_based_access_control.md), the roles of your account
+grant you permissions on DIDs. To list your roles, with their period of validity and their permissions:
+
+```bash
+rucio role account list --me --detail
+```
+
+Each permission applies to the DIDs matching a pattern, e.g. `data:raw*` for the DIDs of the scope `data` whose name starts with `raw`,
+and grants one of the following on them:
+
+- `r--` (read): see them in listings, read their metadata, list their content, replicas and rules, download them,
+  add your own replication rules on them if you may also read all their content, and attach them to your collections;
+- `rw-` (write): read, and create DIDs and attach DIDs to them. On the DIDs you own, it counts as `rwd`: you may also change and delete them;
+- `rwd` (delete): write, and change the metadata of, delete or detach the content of any of them, whoever owns them;
+- `---` (none): nothing, even if a broader pattern of the same role grants more.
+
+What your roles grant adds up, and the scopes you own stay fully yours.
+A permission on a collection does not extend to its content: you only see the files you may read.
+Listings only show the DIDs you may read, and reading any other DID is refused with an access denied error.
+See [DID permissions](operator/role_based_access_control.md#did-permissions) for how the patterns are matched.
+
 ## Open ID Connect authentication examples
 
 There are 3 CLI login methods. Two were introduced in order to avoid typing the
