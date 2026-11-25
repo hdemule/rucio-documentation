@@ -175,3 +175,69 @@ ACCOUNTS = {"description": "Array of accounts",
 ```
 
 You can find the generic schema at [`lib/rucio/common/schema/generic.py`](https://github.com/rucio/rucio/blob/master/lib/rucio/common/schema/generic.py).
+
+## Policy packages and RBAC
+
+[Role-based access control](operator/role_based_access_control.md) (RBAC) is implemented in the generic permission module.
+A policy package with its own `permission.py` module must be checked before upgrading Rucio and before enabling RBAC.
+
+### New actions
+
+The following actions are checked by Rucio and must be granted by the permission module:
+
+- reading DIDs: `list_dids`, `list_parent_dids`, `get_did`, `get_metadata`, `get_metadata_bulk`, `list_content`,
+  `list_content_history`, `list_files`, `scope_list`, `list_archive_content`, `get_users_following_did`, `add_did_to_followed`;
+- reading rules and locks: `list_replication_rule_history`, `list_replication_rule_full_history`, `get_replication_rule`,
+  `examine_replication_rule`, `get_dataset_locks`, `get_dataset_locks_bulk`, `list_associated_replication_rules_for_file`,
+  `get_replica_locks_for_rule_id`;
+- reading replicas: `list_replicas`, `list_dataset_replicas`, `list_dataset_replicas_bulk`, `list_dataset_replicas_vp`;
+- deleting a metadata key: `delete_metadata`.
+
+The generic module maps the read actions to `perm_read_data` and `delete_metadata` to `perm_delete_metadata`.
+Both grant every account while RBAC is disabled.
+
+If the `has_permission` function of the policy package returns `None` for the actions it does not know,
+Rucio falls back to the generic module and nothing needs to be done.
+If it resolves them to its own default instead, e.g. a `perm_default` granting only root and admins,
+these operations are refused to every other account. Map them explicitly:
+
+```python
+from rucio.core.permission.generic import perm_delete_metadata, perm_read_data
+
+perm = {
+    # ... the actions of the policy package
+    'list_dids': perm_read_data,
+    'get_metadata': perm_read_data,
+    'list_replicas': perm_read_data,
+    # ... and the other read actions listed above
+    'delete_metadata': perm_delete_metadata,
+}
+```
+
+### Overriding the DID actions
+
+With RBAC enabled, the following generic actions apply the DID permissions of roles, and require reading the DIDs they involve:
+`add_did`, `add_replicas`, `add_rule`, `attach_dids`, `attach_dids_to_dids`, `create_did_sample`, `detach_dids`,
+`get_request_by_did`, `set_metadata` and `set_metadata_bulk`.
+
+A policy package overriding one of them replaces the generic function: roles then grant nothing on that action,
+and reading the DIDs it involves is not required. Since RBAC hides the DIDs an account may not read,
+such an override would let the account act on them anyway, e.g. add a rule on a hidden DID, or on a collection
+whose content it may not all read, and so copy it to an RSE.
+Before enabling RBAC, make these overrides call the generic function, or mirror it.
+
+### Listing filters
+
+With RBAC enabled, listings are filtered item by item: each item is kept only if the account may read its DID or its scope.
+A permission module may define the following functions to change how listings are filtered.
+Each function it does not define falls back to the generic one:
+
+- `is_listing_filtered(issuer, action, session)`: whether the listing named `action` is filtered for the account.
+  The generic function filters only with RBAC enabled.
+- `scope_filter(issuer, action, session, operation=DidOperationType.READ, any_did=False)`:
+  returns a callable taking a scope, telling whether the account may perform `operation` on the whole scope,
+  or with `any_did`, on some DIDs of the scope.
+- `did_filter(issuer, action, session, operation=DidOperationType.READ)`:
+  returns a callable taking a scope and a name, telling whether the account may perform `operation` on the DID.
+
+The callables are built once per listing, so that a long listing does not query the database for each item.
