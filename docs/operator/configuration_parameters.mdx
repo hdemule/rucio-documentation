@@ -353,6 +353,9 @@ Rucio will look for the config in the following locations -
   - **support**: _(Optional)_ Contact information.
   - **support_rucio**: _(Optional)_ Rucio contact information. Default:
     `https://github.com/rucio/rucio/issues`.
+#### **rbac**
+  - **enabled**: _(Optional)_ Boolean. Enables [role-based access control](operator/role_based_access_control.md).
+    If not set in the configuration file, it is read from the configuration table. Default: `False`.
 #### **repairer**
   - **updated_at_delta**: _(Optional)_ The minimum time in seconds since the last update of a rule
     for STUCK rules to be considered for repairing. Can be set to ``-1`` to ignore the ``updated_at``

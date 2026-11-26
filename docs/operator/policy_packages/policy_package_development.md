@@ -15,6 +15,7 @@ The basic elements of a policy package are the following:
 - A `permission.py` module implementing permission
   customisations (optional).
 - A `schema.py` module implementing schema customization (optional).
+- A `role.py` module defining the roles of the instance (optional), see [Role module](#role-module).
 - One or more files for experiment-specific algorithms (optional).
 
 The recommended Python package layouts can be found [here](https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/). An example `src`-layout based policy package is as such:
@@ -30,6 +31,7 @@ experiment-rucio-policy-package
 │       │   __init__.py               # required
 │       │   permission.py             # optional
 │       │   schema.py                 # optional
+│       │   role.py                   # optional
 │       │   pfn2lfn.py                # optional (deterministic scope translation algorithm)
 │       │   non_deterministic_pfn.py  # optional (non-deterministic scope translation algorithm)
 │       │   ...
@@ -175,3 +177,167 @@ ACCOUNTS = {"description": "Array of accounts",
 ```
 
 You can find the generic schema at [`lib/rucio/common/schema/generic.py`](https://github.com/rucio/rucio/blob/master/lib/rucio/common/schema/generic.py).
+
+## Policy packages and RBAC
+
+[Role-based access control](operator/role_based_access_control.md) (RBAC) is implemented in the generic permission module.
+A policy package with its own `permission.py` module must be checked before upgrading Rucio and before enabling RBAC.
+
+### New actions
+
+The following actions are checked by Rucio and must be granted by the permission module:
+
+- reading DIDs: `list_dids`, `list_parent_dids`, `get_did`, `get_metadata`, `get_metadata_bulk`, `list_content`,
+  `list_content_history`, `list_files`, `scope_list`, `list_archive_content`, `get_users_following_did`, `add_did_to_followed`;
+- reading rules and locks: `list_replication_rule_history`, `list_replication_rule_full_history`, `get_replication_rule`,
+  `examine_replication_rule`, `get_dataset_locks`, `get_dataset_locks_bulk`, `list_associated_replication_rules_for_file`,
+  `get_replica_locks_for_rule_id`;
+- reading replicas: `list_replicas`, `list_dataset_replicas`, `list_dataset_replicas_bulk`, `list_dataset_replicas_vp`;
+- deleting a metadata key: `delete_metadata`.
+
+The generic module maps the read actions to `perm_read_data` and `delete_metadata` to `perm_delete_metadata`.
+Both grant every account while RBAC is disabled.
+
+If the `has_permission` function of the policy package returns `None` for the actions it does not know,
+Rucio falls back to the generic module and nothing needs to be done.
+If it resolves them to its own default instead, e.g. a `perm_default` granting only root and admins,
+these operations are refused to every other account, **even with RBAC disabled**:
+listing DIDs or their content, getting metadata, listing replicas, and so downloading, getting a rule, etc.
+Before upgrading Rucio, map them explicitly:
+
+```python
+from rucio.core.permission.generic import perm_delete_metadata, perm_read_data
+
+perm = {
+    # ... the actions of the policy package
+    'list_dids': perm_read_data,
+    'get_metadata': perm_read_data,
+    'list_replicas': perm_read_data,
+    # ... and the other read actions listed above
+    'delete_metadata': perm_delete_metadata,
+}
+```
+
+### Overriding the DID actions
+
+With RBAC enabled, the following generic actions apply the DID permissions of roles, and require reading the DIDs they involve:
+`add_did`, `add_replicas`, `add_rule`, `attach_dids`, `attach_dids_to_dids`, `create_did_sample`,
+`declare_suspicious_file_replicas`, `detach_dids`, `get_request_by_did`, `set_metadata` and `set_metadata_bulk`.
+`declare_suspicious_file_replicas` receives the declared replicas as `pfns`: PFNs, or dictionaries with a `scope`, a `name` and an `rse_id`.
+
+A policy package overriding one of them replaces the generic function: roles then grant nothing on that action,
+and reading the DIDs it involves is not required. Since RBAC hides the DIDs an account may not read,
+such an override would let the account act on them anyway, e.g. add a rule on a hidden DID, or on a collection
+whose content it may not all read, and so copy it to an RSE.
+Before enabling RBAC, make these overrides call the generic function, or mirror it.
+
+### Role management actions
+
+Managing roles is checked with the actions `list_roles`, `add_role`, `update_role`, `delete_role`,
+`add_role_permission`, `delete_role_permission`, `list_role_accounts`, `add_account_role`, `delete_account_role`,
+`set_account_role_activates_at`, `set_account_role_expires_at` and `clean_expired_account_roles`.
+The generic module grants them to root and admins only, through `perm_default`.
+
+It also grants `list_account_roles` to an account listing its own roles,
+and `list_role_permissions` to an account listing the permissions of a role it holds.
+
+### Listing filters
+
+With RBAC enabled, listings are filtered item by item: each item is kept only if the account may read its DID or its scope.
+A permission module may define the following functions to change how listings are filtered.
+Each function it does not define falls back to the generic one:
+
+- `is_listing_filtered(issuer, action, session)`: whether the listing named `action` is filtered for the account.
+  The generic function filters only with RBAC enabled.
+- `scope_filter(issuer, action, session, operation=DidOperationType.READ, any_did=False)`:
+  returns a callable taking a scope, telling whether the account may perform `operation` on the whole scope,
+  or with `any_did`, on some DIDs of the scope.
+- `did_filter(issuer, action, session, operation=DidOperationType.READ)`:
+  returns a callable taking a scope and a name, telling whether the account may perform `operation` on the DID.
+
+The callables are built once per listing, so that a long listing does not query the database for each item.
+
+### Role module
+
+A policy package can define the roles of the instance in a `role.py` module.
+It defines the roles, their description and the listing filters they disable, not their permissions nor their assignments,
+which are managed in Rucio. Rucio creates and updates the roles it defines when
+[synchronising the roles with the policy package](operator/role_based_access_control.md#with-the-policy-package).
+
+```python
+roles = {
+    'analysts': {
+        'description': 'Reads the data scopes.',
+    },
+    'production': {
+        'description': 'Runs the production workflows.',
+        'disable_filters': ['list_scopes', 'list_dids'],
+    },
+}
+
+# Optional
+disable_filters_for_all_roles = ['list_scopes']
+disable_filters_for_all_accounts = []
+```
+
+`roles` may also be a list of definitions, each with its `name`, e.g. `[{'name': 'analysts', 'description': '...'}]`.
+
+The roles are always defined by the main policy package of the instance,
+set by the `RUCIO_POLICY_PACKAGE` environment variable or the `package` option of the `policy` section,
+never by the policy package of a VO.
+Without a role module, the instance has no roles defined by its policy package and disables no filter.
+A malformed role module raises `ErrorLoadingPolicyPackage`.
+
+#### Disabling listing filters
+
+With RBAC enabled, listings are filtered by default.
+A disabled filter lets its listing through unfiltered, for:
+
+- the accounts holding a role, with the `disable_filters` of the role;
+- the accounts holding at least one role, other than a reserved one, with `disable_filters_for_all_roles`;
+- every account, even one holding no role, with `disable_filters_for_all_accounts`.
+
+Only active role assignments count.
+
+A filter only changes what a request returns once it is accepted. Whether a request is accepted is decided by the permission module:
+reading a DID directly, or acting on it, still requires the permission of its action, whatever filter is disabled.
+
+Each filter is named after the listing it applies to, and hides from it what the account may not read.
+Disabling a filter shows these items again in that listing.
+
+Scopes:
+
+- `list_scopes`: the scopes in which the account reads no DID.
+- `list_scopes_with_account`: the same, when the scopes are listed with the accounts owning them.
+- `get_scopes`: the same, when the scopes of a given account are listed.
+
+DIDs:
+
+- `list_dids`: the DIDs of a scope, when searching them, possibly by metadata.
+- `scope_list`: the DIDs of a scope, when listing the whole scope.
+- `list_new_dids`: the recently created DIDs.
+- `list_content`: the DIDs attached to a collection.
+- `list_content_history`: the DIDs ever attached to a collection, including those detached since.
+- `list_files`: the files of a collection, resolved recursively.
+- `bulk_list_files`: the same, for several collections at once.
+- `list_parent_dids`: the datasets and containers a DID is attached to.
+- `list_archive_content`: the files stored inside an archive.
+- `get_dataset_by_guid`: the datasets containing the file with a given GUID.
+
+Replicas:
+
+- `list_replicas`: the replicas, with their PFNs, of the files the account may not read.
+- `list_datasets_per_rse`: the datasets with replicas on an RSE.
+- `get_did_from_pfns`: the DIDs a list of PFNs resolves to.
+- `list_bad_replicas_status`: the bad replicas, and their PFNs.
+- `get_bad_replicas_summary`: the bad replica counts of the scopes the account does not wholly read, which are left out of the sums.
+- `get_suspicious_files`: the suspicious replicas.
+
+Rules and locks:
+
+- `list_replication_rules`: the rules on DIDs the account may not read.
+- `list_associated_replication_rules_for_file`: the rules protecting a file, set on the file or on its parent collections.
+- `examine_replication_rule`: the transfers of a rule, each naming a file of the content of the DID.
+- `get_dataset_locks_bulk`: the dataset locks of several datasets or containers.
+- `get_dataset_locks_by_rse`: the dataset locks on an RSE.
+- `get_replica_locks_for_rule_id`: the replica locks of a rule, each naming a file.
